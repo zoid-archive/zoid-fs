@@ -544,6 +544,7 @@ export class SQLiteBackend implements Backend {
 
   async updateMode(filepath: string, mode: number) {
     try {
+      const now = new Date();
       const { file, link } = await this.prisma.$transaction(async (tx) => {
         const link = await tx.link.findFirstOrThrow({
           where: {
@@ -556,6 +557,41 @@ export class SQLiteBackend implements Backend {
           },
           data: {
             mode,
+            ctime: now, // chmod updates ctime
+          },
+        });
+        return { file, link };
+      });
+
+      return {
+        status: "ok" as const,
+        file: file,
+      };
+    } catch (e) {
+      console.error(e);
+      return {
+        status: "not_found" as const,
+      };
+    }
+  }
+
+  async updateOwner(filepath: string, uid: number, gid: number) {
+    try {
+      const now = new Date();
+      const { file, link } = await this.prisma.$transaction(async (tx) => {
+        const link = await tx.link.findFirstOrThrow({
+          where: {
+            path: filepath,
+          },
+        });
+        const file = await tx.file.update({
+          where: {
+            id: link.fileId,
+          },
+          data: {
+            uid,
+            gid,
+            ctime: now, // chown updates ctime
           },
         });
         return { file, link };
