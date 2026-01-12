@@ -1,6 +1,7 @@
 import { SQLiteBackend } from "@zoid-fs/sqlite-backend";
 import fuse, { MountOptions } from "@zoid-fs/node-fuse-bindings";
 import { match } from "ts-pattern";
+import pathModule from "path";
 
 export const link: (backend: SQLiteBackend) => MountOptions["link"] = (
   backend
@@ -13,13 +14,13 @@ export const link: (backend: SQLiteBackend) => MountOptions["link"] = (
     // TODO: double check if mode for link is correct
     // https://unix.stackexchange.com/questions/193465/what-file-mode-is-a-link
     const r = await backend.createLink(srcPath, destPath);
-    match(r)
-      .with({ status: "ok" }, () => {
-        cb(0);
-      })
-      .with({ status: "not_found" }, () => {
-        cb(fuse.ENOENT);
-      })
-      .exhaustive();
+    if (r.status === "ok") {
+      // Update parent directory mtime and ctime
+      const parsedPath = pathModule.parse(destPath);
+      await backend.touchDirectory(parsedPath.dir || "/");
+      cb(0);
+    } else {
+      cb(fuse.ENOENT);
+    }
   };
 };

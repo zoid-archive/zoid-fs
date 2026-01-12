@@ -23,7 +23,7 @@ export const getattr: (backend: SQLiteBackend) => MountOptions["getattr"] = (
           return;
         }
         const rNlinks = await backend.getFileNLinks(path);
-        const { mtime, atime, ctime, mode } = r.file;
+        const { mtime, atime, ctime, mode, uid, gid } = r.file;
         cb(0, {
           mtime,
           atime,
@@ -33,9 +33,8 @@ export const getattr: (backend: SQLiteBackend) => MountOptions["getattr"] = (
           nlink: rNlinks.nLinks?.length || 1,
           size: rSize.size,
           mode: mode,
-          // TODO: enable posix mode where real uid/gid are returned
-          uid: process.getuid ? process.getuid() : 0,
-          gid: process.getgid ? process.getgid() : 0,
+          uid: uid,
+          gid: gid,
         });
       })
       .with({ status: "not_found" }, () => {

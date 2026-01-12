@@ -123,6 +123,15 @@ export class SQLiteBackend implements Backend {
     return files;
   }
 
+  async isDirectoryEmpty(dirPath: string): Promise<boolean> {
+    const count = await this.prisma.link.count({
+      where: {
+        dir: dirPath,
+      },
+    });
+    return count === 0;
+  }
+
   async getLink(filepath: string) {
     try {
       const link = await this.prisma.link.findFirstOrThrow({
@@ -206,27 +215,14 @@ export class SQLiteBackend implements Backend {
   async getFileSize(filepath: string) {
     try {
       const file = await this.getFile(filepath);
-
-      // TODO: error handling
-      const lastChunkR = await this.prisma.content.findMany({
-        where: {
-          fileId: file.file?.id,
-        },
-        orderBy: {
-          offset: "desc",
-        },
-        take: 1,
-      });
-      if (lastChunkR.length === 0) {
+      if (file.status !== "ok" || !file.file) {
         return {
-          status: "ok" as const,
-          size: 0,
+          status: "not_found" as const,
         };
       }
-      const { offset, size } = lastChunkR[0];
       return {
         status: "ok" as const,
-        size: offset + size,
+        size: file.file.size,
       };
     } catch (e) {
       console.error(e);
@@ -263,15 +259,30 @@ export class SQLiteBackend implements Backend {
       // Note: destination is new link, filepath is the existing file
       const file = await this.getFile(filepath);
       const parsedPath = path.parse(destinationPath);
+      const now = new Date();
 
-      const link = await this.prisma.link.create({
-        data: {
-          name: parsedPath.base,
-          dir: parsedPath.dir,
-          path: destinationPath,
-          type: "file", // Note: hard link is a regular file
-          fileId: file.file!.id,
-        },
+      const { link } = await this.prisma.$transaction(async (tx) => {
+        const link = await tx.link.create({
+          data: {
+            name: parsedPath.base,
+            dir: parsedPath.dir,
+            path: destinationPath,
+            type: "file", // Note: hard link is a regular file
+            fileId: file.file!.id,
+          },
+        });
+
+        // Update ctime of the original file when creating a new hard link
+        await tx.file.update({
+          where: {
+            id: file.file!.id,
+          },
+          data: {
+            ctime: now,
+          },
+        });
+
+        return { link };
       });
 
       return {
@@ -298,9 +309,22 @@ export class SQLiteBackend implements Backend {
       const parsedPath = path.parse(filepath);
 
       const { file, link } = await this.prisma.$transaction(async (tx) => {
+        // Add the file type bits to the mode if not already present
+        // S_IFDIR = 0o40000 (16384), S_IFREG = 0o100000 (32768), S_IFLNK = 0o120000 (40960)
+        let finalMode = mode;
+        if ((mode & 0o170000) === 0) {
+          // No file type bits set, add them based on type
+          if (type === "dir") {
+            finalMode = mode | 0o40000;
+          } else if (type === "symlink") {
+            finalMode = mode | 0o120000;
+          } else {
+            finalMode = mode | 0o100000;
+          }
+        }
         const file = await tx.file.create({
           data: {
-            mode: type === "dir" ? 16877 : mode,
+            mode: finalMode,
             atime: new Date(),
             mtime: new Date(),
             ctime: new Date(),
@@ -374,6 +398,15 @@ export class SQLiteBackend implements Backend {
         })
       );
 
+      // Update file size if write extends beyond current size
+      const writeEnd = lastChunk.offset + lastChunk.size;
+      if (file && writeEnd > file.size) {
+        await this.prisma.file.update({
+          where: { id: file.id },
+          data: { size: writeEnd },
+        });
+      }
+
       // TODO: probably do this in an event system!
       await this.prisma.$executeRaw`
         UPDATE MetaData
@@ -395,19 +428,68 @@ export class SQLiteBackend implements Backend {
 
   async truncateFile(filepath: string, size: number) {
     try {
-      const link = await this.prisma.link.findFirstOrThrow({
-        where: {
-          path: filepath,
-        },
-      });
-      const file = await this.prisma.content.deleteMany({
-        where: {
-          fileId: link.fileId,
-          offset: {
-            gte: size,
-          },
-        },
-      });
+      const now = new Date();
+      const { link, file } = await this.prisma.$transaction(
+        async (tx) => {
+          const link = await tx.link.findFirstOrThrow({
+            where: {
+              path: filepath,
+            },
+          });
+
+          // Delete all chunks that start at or after the new size
+          await tx.content.deleteMany({
+            where: {
+              fileId: link.fileId,
+              offset: {
+                gte: size,
+              },
+            },
+          });
+
+          // Find chunks that span the truncation boundary (start before size but extend past it)
+          const spanningChunks = await tx.content.findMany({
+            where: {
+              fileId: link.fileId,
+              offset: {
+                lt: size,
+              },
+            },
+          });
+
+          // Truncate any chunk that spans the boundary
+          for (const chunk of spanningChunks) {
+            const chunkEnd = chunk.offset + chunk.size;
+            if (chunkEnd > size) {
+              // This chunk extends past the new size, truncate it
+              const newSize = size - chunk.offset;
+              const truncatedContent = chunk.content.slice(0, newSize);
+              await tx.content.update({
+                where: {
+                  id: chunk.id,
+                },
+                data: {
+                  content: truncatedContent,
+                  size: newSize,
+                },
+              });
+            }
+          }
+
+          // Update size, ctime and mtime on successful truncate
+          const file = await tx.file.update({
+            where: {
+              id: link.fileId,
+            },
+            data: {
+              size: size,
+              mtime: now,
+              ctime: now,
+            },
+          });
+          return { link, file };
+        }
+      );
       return {
         status: "ok" as const,
         file: file,
@@ -422,27 +504,52 @@ export class SQLiteBackend implements Backend {
 
   async deleteFile(filepath: string) {
     try {
+      const now = new Date();
       await this.prisma.$transaction(async (tx) => {
-        const link = await this.prisma.link.findFirstOrThrow({
+        const link = await tx.link.findFirstOrThrow({
           where: {
             path: filepath,
           },
         });
-        await this.prisma.link.deleteMany({
+
+        // Delete the link
+        await tx.link.delete({
           where: {
             id: link.id,
           },
         });
-        const file = await this.prisma.file.deleteMany({
-          where: {
-            id: link.fileId,
-          },
-        });
-        const content = await this.prisma.content.deleteMany({
+
+        // Count remaining links to this file
+        const remainingLinks = await tx.link.count({
           where: {
             fileId: link.fileId,
           },
         });
+
+        if (remainingLinks === 0) {
+          // No more links - delete the file and its content
+          await tx.content.deleteMany({
+            where: {
+              fileId: link.fileId,
+            },
+          });
+          await tx.file.delete({
+            where: {
+              id: link.fileId,
+            },
+          });
+        } else {
+          // Still has links - update ctime
+          await tx.file.update({
+            where: {
+              id: link.fileId,
+            },
+            data: {
+              ctime: now,
+            },
+          });
+        }
+
         return { link };
       });
 
@@ -462,6 +569,7 @@ export class SQLiteBackend implements Backend {
     try {
       const parsedSrcPath = path.parse(srcPath);
       const parsedDestPath = path.parse(destPath);
+      const now = new Date();
 
       const { updatedLink: link } = await this.prisma.$transaction(
         async (tx) => {
@@ -496,6 +604,16 @@ export class SQLiteBackend implements Backend {
             },
           });
 
+          // Update ctime of the file on rename
+          await tx.file.update({
+            where: {
+              id: updatedLink.fileId,
+            },
+            data: {
+              ctime: now,
+            },
+          });
+
           return { updatedLink };
         }
       );
@@ -515,6 +633,7 @@ export class SQLiteBackend implements Backend {
 
   async updateMode(filepath: string, mode: number) {
     try {
+      const now = new Date();
       const { file, link } = await this.prisma.$transaction(async (tx) => {
         const link = await tx.link.findFirstOrThrow({
           where: {
@@ -527,6 +646,41 @@ export class SQLiteBackend implements Backend {
           },
           data: {
             mode,
+            ctime: now, // chmod updates ctime
+          },
+        });
+        return { file, link };
+      });
+
+      return {
+        status: "ok" as const,
+        file: file,
+      };
+    } catch (e) {
+      console.error(e);
+      return {
+        status: "not_found" as const,
+      };
+    }
+  }
+
+  async updateOwner(filepath: string, uid: number, gid: number) {
+    try {
+      const now = new Date();
+      const { file, link } = await this.prisma.$transaction(async (tx) => {
+        const link = await tx.link.findFirstOrThrow({
+          where: {
+            path: filepath,
+          },
+        });
+        const file = await tx.file.update({
+          where: {
+            id: link.fileId,
+          },
+          data: {
+            uid,
+            gid,
+            ctime: now, // chown updates ctime
           },
         });
         return { file, link };
@@ -546,6 +700,7 @@ export class SQLiteBackend implements Backend {
 
   async updateTimes(filepath: string, atime: number, mtime: number) {
     try {
+      const now = new Date();
       const { file, link } = await this.prisma.$transaction(async (tx) => {
         const link = await tx.link.findFirstOrThrow({
           where: {
@@ -559,6 +714,40 @@ export class SQLiteBackend implements Backend {
           data: {
             atime: new Date(atime),
             mtime: new Date(mtime),
+            ctime: now, // utimes also updates ctime
+          },
+        });
+        return { file, link };
+      });
+
+      return {
+        status: "ok" as const,
+        file: file,
+      };
+    } catch (e) {
+      console.error(e);
+      return {
+        status: "not_found" as const,
+      };
+    }
+  }
+
+  async touchDirectory(filepath: string) {
+    try {
+      const now = new Date();
+      const { file, link } = await this.prisma.$transaction(async (tx) => {
+        const link = await tx.link.findFirstOrThrow({
+          where: {
+            path: filepath,
+          },
+        });
+        const file = await tx.file.update({
+          where: {
+            id: link.fileId,
+          },
+          data: {
+            mtime: now,
+            ctime: now,
           },
         });
         return { file, link };

@@ -30,13 +30,15 @@ export const symlink: (backend: SQLiteBackend) => MountOptions["symlink"] = (
     const r = await backend.createFile(
       destPath,
       "symlink",
-      constants.S_IFLNK,
+      constants.S_IFLNK | 0o777, // Symlinks should have 0o120777 mode
       uid,
       gid,
       srcPath
     );
     match(r)
-      .with({ status: "ok" }, () => {
+      .with({ status: "ok" }, async () => {
+        // Update parent directory mtime and ctime
+        await backend.touchDirectory(parsedDestPath.dir || "/");
         cb(0);
       })
       .with({ status: "not_found" }, () => {

@@ -52,6 +52,7 @@ export class FuseClient {
       mountPath,
       {
         force: true,
+        options: ["attr_timeout=0", "entry_timeout=0", "allow_other"],
         init: init(this.backend),
         destroy: destroy(this.backend),
         getattr: getattr(this.backend),
