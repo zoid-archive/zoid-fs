@@ -123,6 +123,15 @@ export class SQLiteBackend implements Backend {
     return files;
   }
 
+  async isDirectoryEmpty(dirPath: string): Promise<boolean> {
+    const count = await this.prisma.link.count({
+      where: {
+        dir: dirPath,
+      },
+    });
+    return count === 0;
+  }
+
   async getLink(filepath: string) {
     try {
       const link = await this.prisma.link.findFirstOrThrow({
@@ -206,27 +215,14 @@ export class SQLiteBackend implements Backend {
   async getFileSize(filepath: string) {
     try {
       const file = await this.getFile(filepath);
-
-      // TODO: error handling
-      const lastChunkR = await this.prisma.content.findMany({
-        where: {
-          fileId: file.file?.id,
-        },
-        orderBy: {
-          offset: "desc",
-        },
-        take: 1,
-      });
-      if (lastChunkR.length === 0) {
+      if (file.status !== "ok" || !file.file) {
         return {
-          status: "ok" as const,
-          size: 0,
+          status: "not_found" as const,
         };
       }
-      const { offset, size } = lastChunkR[0];
       return {
         status: "ok" as const,
-        size: offset + size,
+        size: file.file.size,
       };
     } catch (e) {
       console.error(e);
@@ -402,6 +398,15 @@ export class SQLiteBackend implements Backend {
         })
       );
 
+      // Update file size if write extends beyond current size
+      const writeEnd = lastChunk.offset + lastChunk.size;
+      if (file && writeEnd > file.size) {
+        await this.prisma.file.update({
+          where: { id: file.id },
+          data: { size: writeEnd },
+        });
+      }
+
       // TODO: probably do this in an event system!
       await this.prisma.$executeRaw`
         UPDATE MetaData
@@ -424,14 +429,16 @@ export class SQLiteBackend implements Backend {
   async truncateFile(filepath: string, size: number) {
     try {
       const now = new Date();
-      const { link, file, contentResult } = await this.prisma.$transaction(
+      const { link, file } = await this.prisma.$transaction(
         async (tx) => {
           const link = await tx.link.findFirstOrThrow({
             where: {
               path: filepath,
             },
           });
-          const contentResult = await tx.content.deleteMany({
+
+          // Delete all chunks that start at or after the new size
+          await tx.content.deleteMany({
             where: {
               fileId: link.fileId,
               offset: {
@@ -439,17 +446,48 @@ export class SQLiteBackend implements Backend {
               },
             },
           });
-          // Update ctime and mtime on successful truncate
+
+          // Find chunks that span the truncation boundary (start before size but extend past it)
+          const spanningChunks = await tx.content.findMany({
+            where: {
+              fileId: link.fileId,
+              offset: {
+                lt: size,
+              },
+            },
+          });
+
+          // Truncate any chunk that spans the boundary
+          for (const chunk of spanningChunks) {
+            const chunkEnd = chunk.offset + chunk.size;
+            if (chunkEnd > size) {
+              // This chunk extends past the new size, truncate it
+              const newSize = size - chunk.offset;
+              const truncatedContent = chunk.content.slice(0, newSize);
+              await tx.content.update({
+                where: {
+                  id: chunk.id,
+                },
+                data: {
+                  content: truncatedContent,
+                  size: newSize,
+                },
+              });
+            }
+          }
+
+          // Update size, ctime and mtime on successful truncate
           const file = await tx.file.update({
             where: {
               id: link.fileId,
             },
             data: {
+              size: size,
               mtime: now,
               ctime: now,
             },
           });
-          return { link, file, contentResult };
+          return { link, file };
         }
       );
       return {

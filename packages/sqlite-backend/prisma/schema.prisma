@@ -18,6 +18,7 @@ datasource db {
 model File {
   id       Int       @id @default(autoincrement())
   mode     Int
+  size     Int       @default(0)  // File size (supports sparse files)
   // fileType  String // text or binary
   uid      Int
   gid      Int

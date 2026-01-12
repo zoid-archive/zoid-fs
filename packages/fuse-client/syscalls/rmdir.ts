@@ -1,6 +1,5 @@
 import { SQLiteBackend } from "@zoid-fs/sqlite-backend";
 import fuse, { MountOptions } from "@zoid-fs/node-fuse-bindings";
-import { match } from "ts-pattern";
 import pathModule from "path";
 
 export const rmdir: (backend: SQLiteBackend) => MountOptions["rmdir"] = (
@@ -8,17 +7,22 @@ export const rmdir: (backend: SQLiteBackend) => MountOptions["rmdir"] = (
 ) => {
   return async (path, cb) => {
     console.info("rmdir(%s)", path);
+
+    // Check if directory is empty
+    const isEmpty = await backend.isDirectoryEmpty(path);
+    if (!isEmpty) {
+      cb(fuse.ENOTEMPTY);
+      return;
+    }
+
     const r = await backend.deleteFile(path);
-    match(r)
-      .with({ status: "ok" }, async (r) => {
-        // Update parent directory mtime and ctime
-        const parsedPath = pathModule.parse(path);
-        await backend.touchDirectory(parsedPath.dir || "/");
-        cb(0);
-      })
-      .with({ status: "not_found" }, () => {
-        cb(fuse.ENOENT);
-      })
-      .exhaustive();
+    if (r.status === "ok") {
+      // Update parent directory mtime and ctime
+      const parsedPath = pathModule.parse(path);
+      await backend.touchDirectory(parsedPath.dir || "/");
+      cb(0);
+    } else {
+      cb(fuse.ENOENT);
+    }
   };
 };
