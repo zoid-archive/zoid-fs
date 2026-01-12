@@ -408,19 +408,35 @@ export class SQLiteBackend implements Backend {
 
   async truncateFile(filepath: string, size: number) {
     try {
-      const link = await this.prisma.link.findFirstOrThrow({
-        where: {
-          path: filepath,
-        },
-      });
-      const file = await this.prisma.content.deleteMany({
-        where: {
-          fileId: link.fileId,
-          offset: {
-            gte: size,
-          },
-        },
-      });
+      const now = new Date();
+      const { link, file, contentResult } = await this.prisma.$transaction(
+        async (tx) => {
+          const link = await tx.link.findFirstOrThrow({
+            where: {
+              path: filepath,
+            },
+          });
+          const contentResult = await tx.content.deleteMany({
+            where: {
+              fileId: link.fileId,
+              offset: {
+                gte: size,
+              },
+            },
+          });
+          // Update ctime and mtime on successful truncate
+          const file = await tx.file.update({
+            where: {
+              id: link.fileId,
+            },
+            data: {
+              mtime: now,
+              ctime: now,
+            },
+          });
+          return { link, file, contentResult };
+        }
+      );
       return {
         status: "ok" as const,
         file: file,
