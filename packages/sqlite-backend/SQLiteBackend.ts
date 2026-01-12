@@ -589,6 +589,39 @@ export class SQLiteBackend implements Backend {
     }
   }
 
+  async touchDirectory(filepath: string) {
+    try {
+      const now = new Date();
+      const { file, link } = await this.prisma.$transaction(async (tx) => {
+        const link = await tx.link.findFirstOrThrow({
+          where: {
+            path: filepath,
+          },
+        });
+        const file = await tx.file.update({
+          where: {
+            id: link.fileId,
+          },
+          data: {
+            mtime: now,
+            ctime: now,
+          },
+        });
+        return { file, link };
+      });
+
+      return {
+        status: "ok" as const,
+        file: file,
+      };
+    } catch (e) {
+      console.error(e);
+      return {
+        status: "not_found" as const,
+      };
+    }
+  }
+
   async close() {
     await this.prisma.$disconnect();
   }

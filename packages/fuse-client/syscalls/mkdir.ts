@@ -6,7 +6,8 @@ export const mkdir: (backend: SQLiteBackend) => MountOptions["mkdir"] = (
 ) => {
   return async (filepath, mode, cb) => {
     console.info("mkdir(%s, %s)", filepath, mode);
-    const filename = path.parse(filepath).base;
+    const parsedPath = path.parse(filepath);
+    const filename = parsedPath.base;
 
     if (filename.length > 255) {
       cb(fuse.ENAMETOOLONG);
@@ -19,6 +20,8 @@ export const mkdir: (backend: SQLiteBackend) => MountOptions["mkdir"] = (
 
     const dir = await backend.createFile(filepath, "dir", mode, uid, gid);
     if (dir.status === "ok") {
+      // Update parent directory mtime and ctime
+      await backend.touchDirectory(parsedPath.dir || "/");
       cb(0);
     } else {
       cb(fuse.EACCES);
