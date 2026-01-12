@@ -531,6 +531,7 @@ export class SQLiteBackend implements Backend {
     try {
       const parsedSrcPath = path.parse(srcPath);
       const parsedDestPath = path.parse(destPath);
+      const now = new Date();
 
       const { updatedLink: link } = await this.prisma.$transaction(
         async (tx) => {
@@ -562,6 +563,16 @@ export class SQLiteBackend implements Backend {
               name: parsedDestPath.base,
               dir: parsedDestPath.dir,
               path: destPath,
+            },
+          });
+
+          // Update ctime of the file on rename
+          await tx.file.update({
+            where: {
+              id: updatedLink.fileId,
+            },
+            data: {
+              ctime: now,
             },
           });
 
