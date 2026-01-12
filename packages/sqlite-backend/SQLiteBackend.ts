@@ -263,15 +263,30 @@ export class SQLiteBackend implements Backend {
       // Note: destination is new link, filepath is the existing file
       const file = await this.getFile(filepath);
       const parsedPath = path.parse(destinationPath);
+      const now = new Date();
 
-      const link = await this.prisma.link.create({
-        data: {
-          name: parsedPath.base,
-          dir: parsedPath.dir,
-          path: destinationPath,
-          type: "file", // Note: hard link is a regular file
-          fileId: file.file!.id,
-        },
+      const { link } = await this.prisma.$transaction(async (tx) => {
+        const link = await tx.link.create({
+          data: {
+            name: parsedPath.base,
+            dir: parsedPath.dir,
+            path: destinationPath,
+            type: "file", // Note: hard link is a regular file
+            fileId: file.file!.id,
+          },
+        });
+
+        // Update ctime of the original file when creating a new hard link
+        await tx.file.update({
+          where: {
+            id: file.file!.id,
+          },
+          data: {
+            ctime: now,
+          },
+        });
+
+        return { link };
       });
 
       return {
@@ -451,27 +466,52 @@ export class SQLiteBackend implements Backend {
 
   async deleteFile(filepath: string) {
     try {
+      const now = new Date();
       await this.prisma.$transaction(async (tx) => {
-        const link = await this.prisma.link.findFirstOrThrow({
+        const link = await tx.link.findFirstOrThrow({
           where: {
             path: filepath,
           },
         });
-        await this.prisma.link.deleteMany({
+
+        // Delete the link
+        await tx.link.delete({
           where: {
             id: link.id,
           },
         });
-        const file = await this.prisma.file.deleteMany({
-          where: {
-            id: link.fileId,
-          },
-        });
-        const content = await this.prisma.content.deleteMany({
+
+        // Count remaining links to this file
+        const remainingLinks = await tx.link.count({
           where: {
             fileId: link.fileId,
           },
         });
+
+        if (remainingLinks === 0) {
+          // No more links - delete the file and its content
+          await tx.content.deleteMany({
+            where: {
+              fileId: link.fileId,
+            },
+          });
+          await tx.file.delete({
+            where: {
+              id: link.fileId,
+            },
+          });
+        } else {
+          // Still has links - update ctime
+          await tx.file.update({
+            where: {
+              id: link.fileId,
+            },
+            data: {
+              ctime: now,
+            },
+          });
+        }
+
         return { link };
       });
 
@@ -611,6 +651,7 @@ export class SQLiteBackend implements Backend {
 
   async updateTimes(filepath: string, atime: number, mtime: number) {
     try {
+      const now = new Date();
       const { file, link } = await this.prisma.$transaction(async (tx) => {
         const link = await tx.link.findFirstOrThrow({
           where: {
@@ -624,6 +665,7 @@ export class SQLiteBackend implements Backend {
           data: {
             atime: new Date(atime),
             mtime: new Date(mtime),
+            ctime: now, // utimes also updates ctime
           },
         });
         return { file, link };
