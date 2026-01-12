@@ -298,9 +298,22 @@ export class SQLiteBackend implements Backend {
       const parsedPath = path.parse(filepath);
 
       const { file, link } = await this.prisma.$transaction(async (tx) => {
+        // Add the file type bits to the mode if not already present
+        // S_IFDIR = 0o40000 (16384), S_IFREG = 0o100000 (32768), S_IFLNK = 0o120000 (40960)
+        let finalMode = mode;
+        if ((mode & 0o170000) === 0) {
+          // No file type bits set, add them based on type
+          if (type === "dir") {
+            finalMode = mode | 0o40000;
+          } else if (type === "symlink") {
+            finalMode = mode | 0o120000;
+          } else {
+            finalMode = mode | 0o100000;
+          }
+        }
         const file = await tx.file.create({
           data: {
-            mode: type === "dir" ? 16877 : mode,
+            mode: finalMode,
             atime: new Date(),
             mtime: new Date(),
             ctime: new Date(),

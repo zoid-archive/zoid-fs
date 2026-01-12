@@ -33,7 +33,7 @@ export const getattr: (backend: SQLiteBackend) => MountOptions["getattr"] = (
           nlink: rNlinks.nLinks?.length || 1,
           size: rSize.size,
           mode: mode,
-          // TODO: enable posix mode where real uid/gid are returned
+          // Note: returning process uid/gid for now to avoid permission issues
           uid: process.getuid ? process.getuid() : 0,
           gid: process.getgid ? process.getgid() : 0,
         });

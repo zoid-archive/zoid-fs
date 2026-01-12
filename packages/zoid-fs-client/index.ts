@@ -23,9 +23,17 @@ console.table({
   tenant: tenantArg,
 });
 
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 const backend = await match(backendArg)
   .with("sqlite", () => {
-    return new SQLiteBackend(`file:./${tenantArg}.db`);
+    const dbPath = join(__dirname, "..", "sqlite-backend", "prisma", `${tenantArg}.db`);
+    console.log("Using database path:", dbPath);
+    return new SQLiteBackend(`file:${dbPath}`);
   })
   .with("turso", async () => {
     const tursoBackend = new TursoBackend(tursoEmbeddedArg);
