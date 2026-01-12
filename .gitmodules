@@ -1,6 +1,6 @@
 [submodule "packages/pjd-fstest"]
 	path = packages/pjd-fstest
-	url = git@github.com:divyenduz/pjd-fstest.git
+	url = git@github.com:zoid-archive/pjd-fstest.git
 [submodule "packages/node-fuse-bindings"]
 	path = packages/node-fuse-bindings
-	url = git@github.com:divyenduz/node-fuse-bindings.git
+	url = git@github.com:zoid-archive/node-fuse-bindings.git
