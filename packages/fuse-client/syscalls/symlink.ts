@@ -11,14 +11,14 @@ export const symlink: (backend: SQLiteBackend) => MountOptions["symlink"] = (
     console.info("symlink(%s, %s)", srcPath, destPath);
 
     const parsedDestPath = path.parse(destPath);
-    // Note: actually 255 as per the spec but we get an extra / in the dest path
+    // NAME_MAX on Linux is 255
     if (parsedDestPath.base.length > 255) {
       cb(fuse.ENAMETOOLONG);
       return;
     }
 
-    // Note: actually 1023 as per the spec but we get an extra / in the dest path
-    if (srcPath.length > 1023 || destPath.length > 1023) {
+    // PATH_MAX on Linux is 4096
+    if (destPath.length > 4095) {
       cb(fuse.ENAMETOOLONG);
       return;
     }

@@ -699,6 +699,11 @@ export class SQLiteBackend implements Backend {
   }
 
   async updateTimes(filepath: string, atime: number, mtime: number) {
+    // Deprecated: use updateTimesMs instead
+    return this.updateTimesMs(filepath, atime * 1000, mtime * 1000);
+  }
+
+  async updateTimesMs(filepath: string, atimeMs: number, mtimeMs: number) {
     try {
       const now = new Date();
       const { file, link } = await this.prisma.$transaction(async (tx) => {
@@ -712,8 +717,8 @@ export class SQLiteBackend implements Backend {
             id: link.fileId,
           },
           data: {
-            atime: new Date(atime),
-            mtime: new Date(mtime),
+            atime: new Date(atimeMs),
+            mtime: new Date(mtimeMs),
             ctime: now, // utimes also updates ctime
           },
         });
