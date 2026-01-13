@@ -8,6 +8,13 @@ export const unlink: (backend: SQLiteBackend) => MountOptions["unlink"] = (
   return async (path, cb) => {
     console.info("unlink(%s)", path);
 
+    // Check for ENAMETOOLONG - component name exceeds 255 chars
+    const parsedPath = pathModule.parse(path);
+    if (parsedPath.base.length > 255) {
+      cb(fuse.ENAMETOOLONG);
+      return;
+    }
+
     if (backend.isVirtualFile(path)) {
       cb(0);
       return;
@@ -16,7 +23,6 @@ export const unlink: (backend: SQLiteBackend) => MountOptions["unlink"] = (
     const r = await backend.deleteFile(path);
     if (r.status === "ok") {
       // Update parent directory mtime and ctime
-      const parsedPath = pathModule.parse(path);
       await backend.touchDirectory(parsedPath.dir || "/");
       cb(0);
     } else {

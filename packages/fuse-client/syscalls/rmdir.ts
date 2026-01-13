@@ -8,6 +8,13 @@ export const rmdir: (backend: SQLiteBackend) => MountOptions["rmdir"] = (
   return async (path, cb) => {
     console.info("rmdir(%s)", path);
 
+    // Check for ENAMETOOLONG - component name exceeds 255 chars
+    const parsedPath = pathModule.parse(path);
+    if (parsedPath.base.length > 255) {
+      cb(fuse.ENAMETOOLONG);
+      return;
+    }
+
     // Check if directory is empty
     const isEmpty = await backend.isDirectoryEmpty(path);
     if (!isEmpty) {
@@ -18,7 +25,6 @@ export const rmdir: (backend: SQLiteBackend) => MountOptions["rmdir"] = (
     const r = await backend.deleteFile(path);
     if (r.status === "ok") {
       // Update parent directory mtime and ctime
-      const parsedPath = pathModule.parse(path);
       await backend.touchDirectory(parsedPath.dir || "/");
       cb(0);
     } else {

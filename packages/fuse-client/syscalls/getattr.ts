@@ -1,12 +1,20 @@
 import { SQLiteBackend } from "@zoid-fs/sqlite-backend";
 import fuse, { MountOptions } from "@zoid-fs/node-fuse-bindings";
 import { match } from "ts-pattern";
+import pathModule from "path";
 
 export const getattr: (backend: SQLiteBackend) => MountOptions["getattr"] = (
   backend
 ) => {
   return async (path, cb) => {
     console.info("getattr(%s)", path);
+
+    // Check for ENAMETOOLONG - component name exceeds 255 chars (NAME_MAX)
+    const parsedPath = pathModule.parse(path);
+    if (parsedPath.base.length > 255) {
+      cb(fuse.ENAMETOOLONG);
+      return;
+    }
 
     if (backend.isVirtualFile(path)) {
       const virtualFile = backend.getVirtualFile(path);
